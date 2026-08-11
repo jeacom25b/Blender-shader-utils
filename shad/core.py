@@ -1,15 +1,3 @@
-# Copyright (C) 2021 Jeacom
-# Jean3dimensional@gmail.com
-#     This program is free software: you can redistribute it and/or modify
-#     it under the terms of the GNU General Public License as published by
-#     the Free Software Foundation, either version 3 of the License, or
-#     (at your option) any later version.
-#     This program is distributed in the hope that it will be useful,
-#     but WITHOUT ANY WARRANTY; without even the implied warranty of
-#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-#     GNU General Public License for more details.
-#     You should have received a copy of the GNU General Public License
-#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import re
 from math import ceil, log2
@@ -28,6 +16,7 @@ import inspect
 from functools import wraps, cache
 from copy import deepcopy
 from textwrap import dedent, indent
+import sys
 
 _default_include = ('2d_indexing',)
 
@@ -459,7 +448,7 @@ class UBOStruct(np.ndarray, metaclass=UBOStructMeta):
 
     def __str__(self):
         return repr(self)
-    
+
     def __repr__(self):
         return f'<UBOStruct: {self.__class__.__name__} {str(super().__getitem__(0))}>'
 
@@ -533,12 +522,12 @@ class Texture:
     has .R and .W flags to be used by compute_inline_partial 
     for specifying readony and write only
     '''
-    
+
     readonly: 'Texture'
     '''
     Proxy object interpreted as readonly by compute_inline_partial
     '''
-    
+
     writeonly: 'Texture'
     '''
     Proxy object interpreted as writeonly by compute_inline_partial
@@ -590,7 +579,7 @@ class Texture:
     @cache
     def _upload_buffer():
         class UploadBuffer(UBOStruct):
-            data: UVEC4[16384 // 4]
+            data: UVEC4[16384 // (4 * 4)]
         return UploadBuffer()
 
     @classmethod
@@ -733,7 +722,7 @@ class Texture:
         else:
             rshape = (*self.size, n_channels) if n_channels > 1 else self.size
 
-        return np.frombuffer(data1, dtype=dt)[:np.prod(self.size)*n_channels].reshape(*rshape)
+        return np.frombuffer(data1, dtype=dt)[:np.prod(self.size) * n_channels].reshape(*rshape)
 
 
 def glsl_dedent(code):
@@ -784,11 +773,34 @@ class ShaderBuilder:
                     if input_type == UINT:
                         # UINT refuses to work, likely unsupported
                         raise ValueError(f'{name}: unsupported type UINT for shaders, use INT instead')
-                    
+
                     cr_info.push_constant(filled_in_usages['GLTYPE'], name, size=size)
-                    first_letter = filled_in_usages['GLTYPE'][0]
+                    # first_letter = filled_in_usages['GLTYPE'][0]
                     # kwargs_inputs_mapping[name] = 'uniform_int' if first_letter in 'UIB' else 'uniform_float'
-                    kwargs_inputs_mapping[name] = 'uniform_int' if first_letter in 'IB' else 'uniform_float'
+                    try:
+                        kwargs_inputs_mapping[name] = {
+                            BOOL: 'uniform_bool',
+                            INT: 'uniform_int',
+                            FLOAT: 'uniform_float',
+
+                            VEC2: 'uniform_float',
+                            VEC3: 'uniform_float',
+                            VEC4: 'uniform_float',
+
+                            IVEC2: 'uniform_int',
+                            IVEC3: 'uniform_int',
+                            IVEC4: 'uniform_int',
+
+                            UVEC2: 'uniform_int',
+                            UVEC3: 'uniform_int',
+                            UVEC4: 'uniform_int',
+                            
+                            MAT3: 'uniform_float',
+                            MAT4: 'uniform_float',
+                        }[filled_in_usages['GLTYPE']]
+                        
+                    except KeyError:
+                        raise ValueError(f'unrecogized push_constant {filled_in_usages['GLTYPE']}')
 
                 # image variables
                 elif len(usage_format & {'IMAGE_TYPE', 'IMAGE_FORMAT'}) == 2:
@@ -797,7 +809,7 @@ class ShaderBuilder:
 
                     cr_info.image(tex_slot, filled_in_usages['IMAGE_FORMAT'], filled_in_usages['IMAGE_TYPE'], name,
                                   qualifiers=qualifiers)
-                    
+
                     kwargs_inputs_mapping[name] = 'image'
                     tex_slot += 1
 
@@ -870,16 +882,23 @@ class ShaderBuilder:
 
         if self.defines:
             for name, value in self.defines.items():
-                cr_info.define(name, value)
+                cr_info.define(name, str(value))
 
         if self.compute_source:
             header = '# define COMP_SHADER 1\n'
-            cr_info.compute_source('\n\n'.join((header, _merged_include + self.compute_source)))
+            code = '\n\n'.join((header, _merged_include + self.compute_source))
+            cr_info.compute_source(code)
 
             if isinstance(self.local_size, int):
                 local_size = (local_size,)
             local_size = (*self.local_size, 1, 1, 1)[:3]
             cr_info.local_group_size(*local_size)
+
+            lx, ly, lz = local_size
+            cr_info.define('COMPUTE_TOTAL_INVOCATIONS_', str(lx * ly * lz))
+            cr_info.define('COMPUTE_X_INVOCATIONS_', str(lx))
+            cr_info.define('COMPUTE_Y_INVOCATIONS_', str(ly))
+            cr_info.define('COMPUTE_Z_INVOCATIONS_', str(lz))
 
             self._shader_type = 'COMPUTE'
 
@@ -927,6 +946,10 @@ class ShaderBuilder:
 
         def image_setter(k, v):
             return shader.image(k, getattr(v, '_gpu_texture', v))
+        
+        def dummy_setter(k, v):
+            '''sometimes a shader optmizes out a uniform, and its hella annoying. pretend it still exists'''
+            pass
 
         for k, fn_name in kwargs_inputs_mapping.items():
             match fn_name:
@@ -938,6 +961,16 @@ class ShaderBuilder:
 
                 case 'image':
                     setter_functions[k] = image_setter
+                
+                case 'uniform_int' | 'uniform_float' | 'uniform_bool':
+                    setter_functions[k] = getattr(shader, fn_name)
+
+                    try:
+                        setter_functions[k](k, 0)
+                        
+                    except ValueError:
+                        # uniform not present, likely optimzed out.
+                        setter_functions[k] = dummy_setter
 
                 case _:
                     setter_functions[k] = getattr(shader, fn_name)
@@ -1022,10 +1055,8 @@ def shader_program(*, vert_code=None, frag_code=None, include=(), include_source
                            defines=defines)
 
 
-
-
 @wraps(compute_program)
-def compute_inline_partial(**kw_comp_params):
+def compute_inline_partial(line_no_cache=False, **kw_comp_params):
     '''
     ## example:
     tex = GPUTexture((10, 10), format='RGBA32F')
@@ -1033,18 +1064,15 @@ def compute_inline_partial(**kw_comp_params):
     inline_compute('imageStore(tex, ivec2(gl_GlobalInvocationID.xy), vec4(value));',
                 10, 10, 1, tex=tex, value=(1, 2, 3, 4))
     '''
-    kw_comp_params = deepcopy(kw_comp_params)
-    if 'local_size' not in kw_comp_params:
-        raise ValueError('local_size parameter required')
-
-    local_x, local_y, local_z = (*kw_comp_params['local_size'], 1, 1, 1)[:3]
-    local_size = (local_x, local_y, local_z)
+    # kw_comp_params = deepcopy(kw_comp_params)
+    # if 'local_size' not in kw_comp_params:
+    #     raise ValueError('local_size parameter required')
 
     cache = {}
 
     int_types = (int, np.integer)
     list_types = (list, tuple, np.ndarray)
-    number_types = (int, float, np.integer, np.floating)
+    number_types = (int, float, bool, np.integer, np.floating, np.bool)
 
     texture_formats = _2D_IMAGE_FORMATS.copy()
 
@@ -1055,8 +1083,13 @@ def compute_inline_partial(**kw_comp_params):
     def arg_type(argname, argval):
 
         if isinstance(argval, number_types):
-            is_ingeger_type = isinstance(argval, int_types)
-            return (argname, (FLOAT, INT)[is_ingeger_type])
+            if isinstance(argval, (bool, np.bool)):
+                return (argname, BOOL)
+            
+            elif isinstance(argval, int_types):
+                return (argname, INT)
+
+            return (argname, FLOAT)
 
         if isinstance(argval, (GPUTexture, Texture)):
             if argval.format not in texture_formats:
@@ -1078,14 +1111,31 @@ def compute_inline_partial(**kw_comp_params):
 
         raise ValueError(f'"{argname}": invalid argument type {type(argval)}')
 
-    def compute_inline(*num_invocations, code=None, wrap_main=True, defines={}, **kwargs):
+    def compute_inline(*num_invocations, code=None, wrap_main=True, include=(), include_source='', typedef_source='', defines={}, line_no_cache=line_no_cache, local_size=None, **kwargs):
+        local_size = local_size or kw_comp_params.get('local_size', ())
+        local_size = (*local_size, 1, 1, 1)[:3]
+        local_x, local_y, local_z = local_size
+
         if not code:
             raise ValueError('code argument not provided')
 
-        signature = frozenset((arg_type(*item) for item in kwargs.items()))
-        cache_key = (code, wrap_main, signature, local_size, tuple(defines.items()))
+        signature = None
+        cache_key = None
+
+        if line_no_cache:
+            frame = sys._getframe(1)
+            cache_key = (frame.f_lineno, frame.f_code.co_filename, local_size, tuple(include),
+                         include_source, typedef_source, local_size, tuple(defines.items()))
+
+        else:
+            signature = frozenset((arg_type(*item) for item in kwargs.items()))
+            cache_key = (local_size, tuple(include), signature,
+                         include_source, typedef_source, local_size, tuple(defines.items()))
 
         if cache_key not in cache:
+            if not signature:
+                signature = frozenset((arg_type(*item) for item in kwargs.items()))
+
             if wrap_main:
                 code = dedent('''
                     void main(){
@@ -1098,7 +1148,7 @@ def compute_inline_partial(**kw_comp_params):
 
             else:
                 code = dedent('''
-                bool invocation_boundcheck(){
+                bool boundscheck(){
                     return (gl_GlobalInvocationID.x < num_invocations.x && 
                             gl_GlobalInvocationID.y < num_invocations.y &&
                             gl_GlobalInvocationID.z < num_invocations.z);
@@ -1114,7 +1164,11 @@ def compute_inline_partial(**kw_comp_params):
             extra_inputs.update(kw_comp_params.get('shader_inputs', {}))
 
             params['shader_inputs'] = extra_inputs
+            params['include'] = (*params.get('include', ()), *include)
+            params['include_source'] = params.get('include_source', include_source)
+            params['typedef_source'] = params.get('typedef_source', typedef_source)
             params['defines'] = {**params.get('defines', {}), **defines}
+            params['local_size'] = local_size
             params['code'] = code
 
             program = compute_program(**params)
@@ -1146,4 +1200,6 @@ __all__ = ['ShaderBuilder',
            'compute_inline_partial',
            'shader_program',
            'calc_pot_size',
+           'ceil_pot',
+           'glsl_dedent',
            *_ALL_USAGE_FLAGS]

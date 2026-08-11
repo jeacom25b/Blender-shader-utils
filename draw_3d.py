@@ -1,21 +1,9 @@
-# Copyright (C) 2021 Jeacom
-# Jean3dimensional@gmail.com
-#     This program is free software: you can redistribute it and/or modify
-#     it under the terms of the GNU General Public License as published by
-#     the Free Software Foundation, either version 3 of the License, or
-#     (at your option) any later version.
-#     This program is distributed in the hope that it will be useful,
-#     but WITHOUT ANY WARRANTY; without even the implied warranty of
-#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-#     GNU General Public License for more details.
-#     You should have received a copy of the GNU General Public License
-#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import gpu
 import bpy
 import numpy as np
 from mathutils import Vector, Matrix
-from .shader_utils import *
+from .shad.core import *
 from gpu_extras.batch import batch_for_shader
 import sys
 import functools
@@ -31,6 +19,7 @@ __all__ = [
     "DrawHandler",
     "draw_handler",
 ]
+
 
 def _z_offset_calc(z):
     # my math is almost certainly incorrect here but I dont care
@@ -110,7 +99,6 @@ class PolydotDraw:
         self._draw_points_ex = shader_program(
             include=include,
             defines=defines,
-            include_source=f'#ifdef VERT_SHADER\n{code}\n#endif',
             shader_inputs={'view_data': ViewData,
                            'z_offset': FLOAT,
                            'vert_index': VIN[UINT],
@@ -122,7 +110,7 @@ class PolydotDraw:
                            'point_uv': VOUT[VEC2] | NO_PERSPECTIVE,
                            'fragcol': FRAG_OUT[VEC4],
                            **shader_inputs},
-            vert_code='''//glsl
+            vert_code=f'#ifdef VERT_SHADER\n{code}\n#endif\n' + '''//glsl
 
             void main(){
                 vec4 pos = get_position(gl_InstanceID); // prevent from vert stage getting optmized out
@@ -182,6 +170,7 @@ class PolylineDraw:
     get_position() must return a vec4 where the .w component represents the width of the line at that point.
 
     '''
+
     def __init__(self, *,
                  code,
                  include=[],
@@ -191,7 +180,6 @@ class PolylineDraw:
             include=include,
             defines=defines,
             typedef_source='''struct Type {int value;};''',
-            include_source=f'#ifdef VERT_SHADER\n{code}\n #endif',
             shader_inputs={'ModelViewProjectionMatrix': MAT4,
                            'view_data': ViewData,
                            'z_offset': FLOAT,
@@ -208,7 +196,7 @@ class PolylineDraw:
                            'fragcol': FRAG_OUT[VEC4],
                            **shader_inputs},
 
-            vert_code='''//glsl
+            vert_code=f'#ifdef VERT_SHADER\n{code}\n #endif\n' + '''//glsl
 
             void main(){
                 int segment_id = gl_InstanceID; // which line
@@ -413,10 +401,11 @@ class IMMDraw:
                       points=self.point_tex,
                       view_data=self.view_data)
 
+
 if False:
     '''
     Example usage for this stuff
-    
+
     '''
     class TestDrawPoints(bpy.types.Operator):
         bl_idname = 'test.draw_points'
@@ -431,20 +420,20 @@ if False:
             gpu.state.blend_set('ALPHA')
             gpu.state.point_size_set(20)
             draw_dots_tex(self.num_points,
-                        points=self.points,
-                        colors=self.colors,
-                        z_offset=_z_offset_calc(0.05),
-                        view_data=self.view_data,
-                        )
+                          points=self.points,
+                          colors=self.colors,
+                          z_offset=_z_offset_calc(0.05),
+                          view_data=self.view_data,
+                          )
 
             draw_lines_tex(self.num_points,
-                        points=self.points,
-                        colors=self.colors,
-                        z_offset=_z_offset_calc(0.05),
-                        feather=1,
-                        strip=True,
-                        view_data=self.view_data,
-                        )
+                           points=self.points,
+                           colors=self.colors,
+                           z_offset=_z_offset_calc(0.05),
+                           feather=1,
+                           strip=True,
+                           view_data=self.view_data,
+                           )
 
             gpu.state.depth_mask_set(False)
             gpu.state.depth_test_set('NONE')
@@ -494,6 +483,5 @@ if False:
                 return {'RUNNING_MODAL'}
 
             return {'PASS_THROUGH'}
-
 
     CLASSES = [TestDrawPoints]

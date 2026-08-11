@@ -30,8 +30,8 @@ ivec2 idx2coord_row(uint idx, ivec2 imsize){
     return ivec2(idx % imsize.x, idx / imsize.x);
 }
 
-# define IDX2COORD(im, idx) idx2coord_block(idx, imageSize(im))
-# define IDX2COORD_TEX(im, idx) idx2coord_block(idx, textureSize(im, 0))
+# define IDX2COORD(im, idx) idx2coord_row(idx, imageSize(im))
+# define IDX2COORD_TEX(im, idx) idx2coord_row(idx, textureSize(im, 0))
 
 # define load(im, idx) imageLoad(im, IDX2COORD(im, idx))
 # define store(im, idx, data) imageStore(im, IDX2COORD(im, idx), data)
