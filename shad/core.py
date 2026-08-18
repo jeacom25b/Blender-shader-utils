@@ -34,10 +34,10 @@ class UsageFlag(str):
         raise TypeError('invalid subitem type', type(subitem))
 
     def __new__(cls, value, *args, **kwargs):
-        instance = super().__new__(UsageFlag, value)
+        instance = super().__new__(UsageFlag, value)  # pyright: ignore
         return instance
 
-    def __init__(self, value, subitems=(), size=None, usage=None, np_dt=None):
+    def __init__(self, value, subitems=(), size: tuple | int = None, usage: str = None, np_dt: np.dtype = None):
         self._value = value
         self._subitems = tuple(self._validate_subitem(item) for item in subitems)
         self._size = size
@@ -75,7 +75,7 @@ class UsageFlag(str):
             raise ValueError('multiple sizes found for ' + self.to_string())
         return all_sizes.pop() if all_sizes else 0
 
-    def to_string(self, usage=False):
+    def to_string(self, usage=False) -> str:
         ret = self._usage if usage else self._value
 
         if self._size not in (None, 0, 1):
@@ -132,7 +132,7 @@ DEPTH_CUBE_ARRAY      = UsageFlag('DEPTH_CUBE_ARRAY',  size=None, usage='IMAGE_T
 
 _2D_IMAGE_FORMATS = {}
 
-def _make_2d_format(imformat):
+def _make_2d_format(imformat) -> tuple:
     typemap = {'UI' : UINT_2D,  'I'  : INT_2D,
                '8'  : FLOAT_2D, 'F'  : FLOAT_2D,
                '16F': FLOAT_2D, '16' : UINT_2D}
@@ -142,6 +142,9 @@ def _make_2d_format(imformat):
             imformat_2d = imtype[imformat]
             _2D_IMAGE_FORMATS[imformat._value] = imformat_2d
             return imformat, imformat_2d
+
+    raise ValueError('un2difiable type')
+
 
 # Format types & 2D image formats
 RGBA8UI, RGBA8UI_2D    = _make_2d_format(UsageFlag('RGBA8UI',           size=None, usage='IMAGE_FORMAT'))
@@ -280,14 +283,14 @@ class UBOStruct(np.ndarray, metaclass=UBOStructMeta):
     https://developer.blender.org/docs/handbook/guidelines/glsl/#packing-rules
 
     '''
-    _data_arr = None
-    _dirty = True
-    _ubo = None
-    _matrix_elems = None
+    # _data_arr = None
+    # _dirty = True
+    # _ubo = None
+    # _matrix_elems = None
     _size = 1
-    _np_dt = 1
-    _substructs = None
-    _compiled_typedef_string = None
+    # _np_dt = 1
+    # _substructs = None
+    # _compiled_typedef_string = None
 
     def __init_subclass__(cls):
         annots = inspect.get_annotations(cls)
@@ -391,6 +394,7 @@ class UBOStruct(np.ndarray, metaclass=UBOStructMeta):
                 emit_element(name, v)
 
             elif isinstance(v, type) and issubclass(v, UBOStruct):
+                v: UBOStruct = v
                 add_dtype_elem(name, v._np_dt, v._size)
                 struct_size += int(v._np_dt.itemsize) * max(v._size, 1)
 
@@ -731,16 +735,16 @@ def glsl_dedent(code):
 
 @dataclass
 class ShaderBuilder:
-    shader_inputs: dict = None
-    defines: dict = None
-    vertex_source: str = None
-    fragment_source: str = None
-    compute_source: str = None
+    shader_inputs: dict | None = None
+    defines: dict | None = None
+    vertex_source: str = ''
+    fragment_source: str = ''
+    compute_source: str = ''
     typedef_source: str = ''
 
     include_source: str = ''
-    include: (list, tuple) = ()
-    local_size: (list, tuple) = (1, 1, 1)
+    include: list | tuple = ()
+    local_size: list | tuple = (1, 1, 1)
 
     _shader: GPUShader = None
     _dispatch_kwargs_fn = None
@@ -794,11 +798,11 @@ class ShaderBuilder:
                             UVEC2: 'uniform_int',
                             UVEC3: 'uniform_int',
                             UVEC4: 'uniform_int',
-                            
+
                             MAT3: 'uniform_float',
                             MAT4: 'uniform_float',
                         }[filled_in_usages['GLTYPE']]
-                        
+
                     except KeyError:
                         raise ValueError(f'unrecogized push_constant {filled_in_usages['GLTYPE']}')
 
@@ -890,7 +894,7 @@ class ShaderBuilder:
             cr_info.compute_source(code)
 
             if isinstance(self.local_size, int):
-                local_size = (local_size,)
+                local_size = (self.local_size,)
             local_size = (*self.local_size, 1, 1, 1)[:3]
             cr_info.local_group_size(*local_size)
 
@@ -946,7 +950,7 @@ class ShaderBuilder:
 
         def image_setter(k, v):
             return shader.image(k, getattr(v, '_gpu_texture', v))
-        
+
         def dummy_setter(k, v):
             '''sometimes a shader optmizes out a uniform, and its hella annoying. pretend it still exists'''
             pass
@@ -961,13 +965,13 @@ class ShaderBuilder:
 
                 case 'image':
                     setter_functions[k] = image_setter
-                
+
                 case 'uniform_int' | 'uniform_float' | 'uniform_bool':
                     setter_functions[k] = getattr(shader, fn_name)
 
                     try:
                         setter_functions[k](k, 0)
-                        
+
                     except ValueError:
                         # uniform not present, likely optimzed out.
                         setter_functions[k] = dummy_setter
@@ -986,7 +990,7 @@ class ShaderBuilder:
         return params_set
 
 
-def _make_shader_fn(code_strings=None, local_size=None, include=(), include_source='', typedef_source='', shader_inputs={}, defines={}):
+def _make_shader_fn(code_strings={}, local_size=(1, 1, 1), include=(), include_source='', typedef_source='', shader_inputs={}, defines={}):
     compute_code = code_strings.get('compute', None)
     vert_code = code_strings.get('vertex', None)
     frag_code = code_strings.get('fragment', None)
@@ -1003,33 +1007,7 @@ def _make_shader_fn(code_strings=None, local_size=None, include=(), include_sour
 
     shader, params_set, _ = shader_builder.build()
 
-    if compute_code:
-        def shader_fn(*num_workgroups, **kwargs):
-            shader.bind()
-            params_set(kwargs)
-            gpu.compute.dispatch(shader, *(*num_workgroups, 1, 1)[:3])
-
-        shader_fn.shader = shader
-
-    else:
-
-        def shader_fn(batch, **kwargs):
-            shader.bind()
-            params_set(kwargs)
-            batch.draw(shader)
-
-        def instanced(batch, instance_start=0, instance_count=0, **kwargs):
-            shader.bind()
-            params_set(kwargs)
-            batch.draw_instanced(shader,
-                                 instance_start=instance_start,
-                                 instance_count=instance_count)
-
-        shader_fn.shader = shader
-        shader_fn.instanced = instanced
-        shader_fn.params_set = params_set
-
-    return shader_fn
+    return shader, params_set
 
 
 def compute_program(*, code=None, local_size=None, include=(), include_source='', typedef_source='', shader_inputs={}, defines={}):
@@ -1039,20 +1017,46 @@ def compute_program(*, code=None, local_size=None, include=(), include_source=''
     if not local_size:
         raise ValueError('local_size parameter required')
 
-    return _make_shader_fn(code_strings={'compute': code}, local_size=local_size, include=include,
-                           include_source=include_source, typedef_source=typedef_source,
-                           shader_inputs=shader_inputs,
-                           defines=defines)
+    shader, params_set = _make_shader_fn(code_strings={'compute': code}, local_size=local_size, include=include,
+                                         include_source=include_source, typedef_source=typedef_source,
+                                         shader_inputs=shader_inputs,
+                                         defines=defines)
+
+    def shader_fn(*num_workgroups, **kwargs):
+        shader.bind()
+        params_set(kwargs)
+        gpu.compute.dispatch(shader, *(*num_workgroups, 1, 1)[:3])
+
+    shader_fn.shader = shader
+    return shader_fn
 
 
 def shader_program(*, vert_code=None, frag_code=None, include=(), include_source='', typedef_source='', shader_inputs={}, defines={}):
     if not vert_code and frag_code:
         raise ValueError('shader code has not been provided')
 
-    return _make_shader_fn(code_strings={'vertex': vert_code, 'fragment': frag_code}, local_size=None, include=include,
-                           include_source=include_source, typedef_source=typedef_source,
-                           shader_inputs=shader_inputs,
-                           defines=defines)
+    shader, params_set = _make_shader_fn(code_strings={'vertex': vert_code, 'fragment': frag_code}, local_size=None, include=include,
+                                         include_source=include_source, typedef_source=typedef_source,
+                                         shader_inputs=shader_inputs,
+                                         defines=defines)
+
+    def shader_fn(batch, **kwargs):
+        shader.bind()
+        params_set(kwargs)
+        batch.draw(shader)
+
+    def instanced(batch, instance_start=0, instance_count=0, **kwargs):
+        shader.bind()
+        params_set(kwargs)
+        batch.draw_instanced(shader,
+                             instance_start=instance_start,
+                             instance_count=instance_count)
+
+    shader_fn.shader = shader
+    shader_fn.instanced = instanced
+    shader_fn.params_set = params_set
+
+    return shader_fn
 
 
 @wraps(compute_program)
@@ -1085,7 +1089,7 @@ def compute_inline_partial(line_no_cache=False, **kw_comp_params):
         if isinstance(argval, number_types):
             if isinstance(argval, (bool, np.bool)):
                 return (argname, BOOL)
-            
+
             elif isinstance(argval, int_types):
                 return (argname, INT)
 
@@ -1202,4 +1206,4 @@ __all__ = ['ShaderBuilder',
            'calc_pot_size',
            'ceil_pot',
            'glsl_dedent',
-           *_ALL_USAGE_FLAGS]
+           *_ALL_USAGE_FLAGS]  # pyright: ignore

@@ -100,3 +100,33 @@ float parallel_max(float x){
 float parallel_min(float x){
     return uintBitsToFloat(parallel_reduction_impl_(floatBitsToUint(x), ROP_FMIN_));
 }
+
+SHARED uint any_val_;
+
+uint any_nonzero(uint x){
+    barrier();
+    if (gl_LocalInvocationIndex == 0) any_val_ = 0;
+    barrier();
+    if (x != 0){
+        atomicMax(any_val_, x);
+    }
+    barrier();
+    return any_val_;
+}
+
+int any_nonzero(int x){
+    return int(any_nonzero(uint(x)));
+}
+
+float any_nonzero(float x){
+    uint y = x==0.0? 0 : floatBitsToUint(x);
+    return uintBitsToFloat(any_nonzero(y));
+}
+
+bool any_true(bool x){
+    return bool(any_nonzero(int(x)));
+}
+
+bool all_true(bool x){
+    return !any_true(!x);
+}
